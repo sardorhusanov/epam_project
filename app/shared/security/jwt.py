@@ -1,57 +1,76 @@
-from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Literal
+from uuid import UUID, uuid4
 
 import jwt
-from jwt import ExpiredSignatureError, InvalidTokenError
 
-SECRET_KEY = "change-this-in-env"
-ALGORITHM = "HS256"
+from app.shared.config.settings import Settings
+from app.shared.exceptions.types import AuthenticationError
 
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
-REFRESH_TOKEN_EXPIRE_DAYS = 1
+TokenType = Literal["access", "refresh", "password_reset"]
 
 
-def _create_token(
-    user_id: UUID,
-    token_type: str,
-    expires_delta: timedelta,
-) -> str:
-    now = datetime.now(timezone.utc)
-
-    payload = {
-        "sub": str(user_id),
-        "type": token_type,
-        "iat": now,
-        "exp": now + expires_delta,
-    }
-
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+@dataclass(frozen=True, slots=True)
+class TokenPayload:
+    subject: UUID
+    token_type: TokenType
+    jti: str
+    issued_at: datetime
+    expires_at: datetime
 
 
-def create_access_token(user_id: UUID) -> str:
-    return _create_token(
-        user_id=user_id,
-        token_type="access",
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-    )
+class TokenManager:
+    def __init__(self, settings: Settings) -> None:
+        self._secret = settings.JWT_SECRET_KEY
+        self._algorithm = settings.JWT_ALGORITHM
+        self._lifetimes = {
+            "access": timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+            "refresh": timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES),
+            "password_reset": timedelta(
+                minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+            ),
+        }
 
-
-def create_refresh_token(user_id: UUID) -> str:
-    return _create_token(
-        user_id=user_id,
-        token_type="refresh",
-        expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-    )
-
-
-def decode_token(token: str) -> dict:
-    try:
-        return jwt.decode(
-            token,
-            SECRET_KEY,
-            algorithms=[ALGORITHM],
+    def create(self, subject: UUID, token_type: TokenType) -> tuple[str, TokenPayload]:
+        now = datetime.now(UTC)
+        payload = TokenPayload(
+            subject=subject,
+            token_type=token_type,
+            jti=str(uuid4()),
+            issued_at=now,
+            expires_at=now + self._lifetimes[token_type],
         )
-    except ExpiredSignatureError:
-        raise ValueError("Token has expired")
-    except InvalidTokenError:
-        raise ValueError("Invalid token")
+        encoded = jwt.encode(
+            {
+                "sub": str(payload.subject),
+                "type": payload.token_type,
+                "jti": payload.jti,
+                "iat": payload.issued_at,
+                "exp": payload.expires_at,
+            },
+            self._secret,
+            algorithm=self._algorithm,
+        )
+        return encoded, payload
+
+    def decode(self, token: str, expected_type: TokenType) -> TokenPayload:
+        try:
+            data = jwt.decode(token, self._secret, algorithms=[self._algorithm])
+            if data.get("type") != expected_type:
+                raise AuthenticationError("Invalid token type")
+            subject = UUID(data["sub"])
+            jti = str(data["jti"])
+            issued_at = datetime.fromtimestamp(int(data["iat"]), tz=UTC)
+            expires_at = datetime.fromtimestamp(int(data["exp"]), tz=UTC)
+        except AuthenticationError:
+            raise
+        except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
+            raise AuthenticationError("Invalid or expired token") from exc
+        return TokenPayload(
+            subject=subject,
+            token_type=expected_type,
+            jti=jti,
+            issued_at=issued_at,
+            expires_at=expires_at,
+        )

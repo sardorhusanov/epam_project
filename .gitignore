@@ -1,42 +1,41 @@
 # Python-generated files
-
-**pycache**/
-*.py[oc]
+__pycache__/
+*.py[cod]
+*$py.class
 build/
 dist/
 wheels/
 *.egg-info/
 
 # Virtual environments
-
 .venv/
+venv/
 
 # Environment variables
-
 .env
 .env.*
+!.env.example
 
-# Tool caches
-
+# Test and tool caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # IDEs
-
 .vscode/
 .idea/
 
 # OS files
-
 .DS_Store
 Thumbs.db
 
 # Logs
-
 *.log
 logs/
 
-# Alembic cache
-
-migrations/**pycache**/
+# Temporary files
+*.tmp
+*.swp

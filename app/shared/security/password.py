@@ -1,13 +1,12 @@
 from pwdlib import PasswordHash
 
-password_hasher = PasswordHash.recommended()
 
+class PasswordManager:
+    def __init__(self) -> None:
+        self._password_hash = PasswordHash.recommended()
 
-def hash_password(password: str) -> str:
-    """Hash a plain-text password using Argon2."""
-    return password_hasher.hash(password)
+    def hash(self, password: str) -> str:
+        return self._password_hash.hash(password)
 
-
-def verify_password(password: str, hashed_password: str) -> bool:
-    """Verify a plain-text password against a stored Argon2 hash."""
-    return password_hasher.verify(password, hashed_password)
+    def verify(self, password: str, hashed_password: str) -> bool:
+        return self._password_hash.verify(password, hashed_password)
