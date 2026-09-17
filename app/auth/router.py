@@ -1,78 +1,85 @@
-from fastapi import APIRouter, Depends, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Annotated
 
+from dependency_injector.wiring import Provide, inject
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from app.auth.interfaces.service import IAuthService
 from app.auth.schemas import (
-    AccessTokenResponse,
     ChangePasswordRequest,
     LoginRequest,
+    MessageResponse,
     PasswordResetRequest,
     RefreshRequest,
-    RegisterRequest,
-    TokenResponse,
+    TokenPair,
 )
-from app.auth.service import AuthService
-from app.shared.db.database import get_db
-from app.shared.security.dependencies import get_current_user
-from app.users.models import User
+from app.container import Container
+from app.users.schemas import UserCreate, UserResponse
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router = APIRouter(tags=["Authentication"])
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def require_bearer_token(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> str:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bearer access token is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials.credentials
 
 
 @router.post(
-    "/register",
-    response_model=TokenResponse,
-    status_code=status.HTTP_201_CREATED,
+    "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED
 )
+@inject
 async def register(
-    data: RegisterRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    service = AuthService(db)
-    return await service.register(data)
+    data: UserCreate,
+    service: Annotated[IAuthService, Depends(Provide[Container.auth_service])],
+) -> UserResponse:
+    user = await service.register(data)
+    return UserResponse.model_validate(user)
 
 
-@router.post(
-    "/login",
-    response_model=TokenResponse,
-)
+@router.post("/login", response_model=TokenPair)
+@inject
 async def login(
     data: LoginRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    service = AuthService(db)
-    return await service.login(data)
+    service: Annotated[IAuthService, Depends(Provide[Container.auth_service])],
+) -> TokenPair:
+    return await service.login(str(data.email), data.password)
 
 
-@router.post(
-    "/refresh",
-    response_model=AccessTokenResponse,
-)
+@router.post("/refresh", response_model=TokenPair)
+@inject
 async def refresh(
     data: RefreshRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    service = AuthService(db)
-    return await service.refresh(data)
+    service: Annotated[IAuthService, Depends(Provide[Container.auth_service])],
+) -> TokenPair:
+    return await service.refresh(data.refresh_token)
 
 
-@router.post(
-    "/password_reset",
-)
+@router.post("/password_reset", response_model=MessageResponse)
+@inject
 async def password_reset(
     data: PasswordResetRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    service = AuthService(db)
-    return await service.password_reset(data)
+    service: Annotated[IAuthService, Depends(Provide[Container.auth_service])],
+) -> MessageResponse:
+    await service.reset_password(data.reset_token, data.new_password)
+    return MessageResponse(message="Password reset successfully")
 
 
-@router.post(
-    "/change_password",
-)
+@router.post("/change_password", response_model=MessageResponse)
+@inject
 async def change_password(
     data: ChangePasswordRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    service = AuthService(db)
-    return await service.change_password(current_user, data)
+    access_token: Annotated[str, Depends(require_bearer_token)],
+    service: Annotated[IAuthService, Depends(Provide[Container.auth_service])],
+) -> MessageResponse:
+    await service.change_password(
+        access_token, data.current_password, data.new_password
+    )
+    return MessageResponse(message="Password changed successfully")

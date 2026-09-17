@@ -1,166 +1,126 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.auth.repository import AuthRepository
-from app.auth.schemas import (
-    AccessTokenResponse,
-    ChangePasswordRequest,
-    LoginRequest,
-    PasswordResetRequest,
-    RefreshRequest,
-    RegisterRequest,
-    TokenResponse,
+from app.auth.interfaces.service import IAuthService
+from app.auth.schemas import TokenPair
+from app.shared.cache.interface import ICacheService
+from app.shared.exceptions.types import (
+    AuthenticationError,
+    ConflictError,
+    ValidationError,
 )
-from app.shared.security.jwt import (
-    create_access_token,
-    create_refresh_token,
-    decode_token,
-)
-from app.shared.security.password import (
-    hash_password,
-    verify_password,
-)
+from app.shared.security.jwt import TokenManager, TokenPayload
+from app.shared.security.password import PasswordManager
+from app.users.interfaces.repository import IUserRepository
 from app.users.models import User
+from app.users.schemas import UserCreate, normalize_email
 
 
-class AuthService:
-    def __init__(self, db: AsyncSession):
-        self.repo = AuthRepository(db)
-
-    async def register(
+class AuthService(IAuthService):
+    def __init__(
         self,
-        data: RegisterRequest,
-    ) -> TokenResponse:
-        existing_user = await self.repo.get_user_by_email(data.email)
+        user_repository: IUserRepository,
+        cache: ICacheService,
+        password_manager: PasswordManager,
+        token_manager: TokenManager,
+    ) -> None:
+        self._users = user_repository
+        self._cache = cache
+        self._passwords = password_manager
+        self._tokens = token_manager
 
-        if existing_user:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Email already registered",
-            )
-
-        hashed = hash_password(data.password)
-
-        user = await self.repo.create_user(
+    async def register(self, data: UserCreate) -> User:
+        email = normalize_email(str(data.email))
+        if await self._users.get_by_email(email) is not None:
+            raise ConflictError("A user with this email already exists")
+        return await self._users.create(
+            email=email,
             first_name=data.first_name,
             last_name=data.last_name,
-            email=data.email,
-            hashed_password=hashed,
+            hashed_password=self._passwords.hash(data.password),
         )
 
-        access = create_access_token(user.id)
-        refresh = create_refresh_token(user.id)
+    async def login(self, email: str, password: str) -> TokenPair:
+        user = await self._users.get_by_email(normalize_email(email))
+        if user is None or not self._passwords.verify(password, user.hashed_password):
+            raise AuthenticationError("Invalid email or password")
+        return await self._issue_token_pair(user.id)
 
-        return TokenResponse(
-            access_token=access,
-            refresh_token=refresh,
-        )
+    async def refresh(self, refresh_token: str) -> TokenPair:
+        payload = self._tokens.decode(refresh_token, "refresh")
+        key = self._refresh_key(payload.jti)
+        stored_subject = await self._cache.get(key)
+        if stored_subject != str(payload.subject):
+            raise AuthenticationError("Refresh token is invalid or has been revoked")
 
-    async def login(
-        self,
-        data: LoginRequest,
-    ) -> TokenResponse:
-        user = await self.repo.get_user_by_email(data.email)
+        # Delete first: a token can only be successfully rotated once.
+        await self._cache.delete(key)
+        if await self._users.get_by_id(payload.subject) is None:
+            raise AuthenticationError("Refresh token subject no longer exists")
+        return await self._issue_token_pair(payload.subject)
 
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password",
-            )
-
-        if not verify_password(
-            data.password,
-            user.hashed_password,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password",
-            )
-
-        access = create_access_token(user.id)
-        refresh = create_refresh_token(user.id)
-
-        return TokenResponse(
-            access_token=access,
-            refresh_token=refresh,
-        )
-
-    async def refresh(
-        self,
-        data: RefreshRequest,
-    ) -> AccessTokenResponse:
-        try:
-            payload = decode_token(data.refresh_token)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired refresh token",
-            )
-
-        if payload.get("type") != "refresh":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token required",
-            )
-
-        user_id = UUID(payload["sub"])
-
-        user = await self.repo.users.get_by_id(user_id)
-
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found",
-            )
-
-        access = create_access_token(user.id)
-
-        return AccessTokenResponse(
-            access_token=access,
-        )
-
-    async def password_reset(
-        self,
-        data: PasswordResetRequest,
-    ) -> dict:
-        user = await self.repo.get_user_by_email(data.email)
-
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found",
-            )
-
-        hashed = hash_password(data.new_password)
-
-        await self.repo.update_password(
-            user=user,
-            hashed_password=hashed,
-        )
-
-        return {"message": "Password reset successfully"}
+    async def reset_password(self, reset_token: str, new_password: str) -> None:
+        payload = self._tokens.decode(reset_token, "password_reset")
+        key = self._reset_key(payload.jti)
+        stored_subject = await self._cache.get(key)
+        if stored_subject != str(payload.subject):
+            raise AuthenticationError("Password-reset token is invalid or already used")
+        user = await self._require_user(payload.subject)
+        if self._passwords.verify(new_password, user.hashed_password):
+            raise ValidationError("New password must differ from the current password")
+        await self._users.update_password(user.id, self._passwords.hash(new_password))
+        await self._cache.delete(key)
 
     async def change_password(
-        self,
-        current_user: User,
-        data: ChangePasswordRequest,
-    ) -> dict:
-        if not verify_password(
-            data.current_password,
-            current_user.hashed_password,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is incorrect",
-            )
+        self, access_token: str, current_password: str, new_password: str
+    ) -> None:
+        payload = self._tokens.decode(access_token, "access")
+        user = await self._require_user(payload.subject)
+        if not self._passwords.verify(current_password, user.hashed_password):
+            raise AuthenticationError("Current password is incorrect")
+        if self._passwords.verify(new_password, user.hashed_password):
+            raise ValidationError("New password must differ from the current password")
+        await self._users.update_password(user.id, self._passwords.hash(new_password))
 
-        hashed = hash_password(data.new_password)
+    async def issue_password_reset_token(self, user_id: UUID) -> str:
+        """Create a reset token for the future email workflow; never expose publicly."""
+        await self._require_user(user_id)
+        token, payload = self._tokens.create(user_id, "password_reset")
+        await self._cache.set(
+            self._reset_key(payload.jti),
+            str(user_id),
+            self._remaining_seconds(payload),
+        )
+        return token
 
-        await self.repo.update_password(
-            user=current_user,
-            hashed_password=hashed,
+    async def _issue_token_pair(self, user_id: UUID) -> TokenPair:
+        access_token, access = self._tokens.create(user_id, "access")
+        refresh_token, refresh = self._tokens.create(user_id, "refresh")
+        refresh_seconds = self._remaining_seconds(refresh)
+        await self._cache.set(
+            self._refresh_key(refresh.jti), str(user_id), refresh_seconds
+        )
+        return TokenPair(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            access_expires_in=self._remaining_seconds(access),
+            refresh_expires_in=refresh_seconds,
         )
 
-        return {"message": "Password changed successfully"}
+    async def _require_user(self, user_id: UUID) -> User:
+        user = await self._users.get_by_id(user_id)
+        if user is None:
+            raise AuthenticationError("Authenticated user no longer exists")
+        return user
+
+    @staticmethod
+    def _remaining_seconds(payload: TokenPayload) -> int:
+        return max(1, int((payload.expires_at - datetime.now(UTC)).total_seconds()))
+
+    @staticmethod
+    def _refresh_key(jti: str) -> str:
+        return f"auth:refresh:{jti}"
+
+    @staticmethod
+    def _reset_key(jti: str) -> str:
+        return f"auth:password-reset:{jti}"

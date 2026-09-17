@@ -1,38 +1,39 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
-
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    first_name: str = Field(min_length=1, max_length=100)
-    last_name: str = Field(min_length=1, max_length=100)
-    password: str = Field(min_length=8, max_length=128)
+from app.users.schemas import normalize_email
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_login_email(cls, value: object) -> object:
+        return normalize_email(value) if isinstance(value, str) else value
+
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    access_expires_in: int
+    refresh_expires_in: int
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(min_length=1)
 
 
 class PasswordResetRequest(BaseModel):
-    email: EmailStr
+    reset_token: str = Field(min_length=1)
     new_password: str = Field(min_length=8, max_length=128)
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
+    current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-
-
-class AccessTokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+class MessageResponse(BaseModel):
+    message: str
