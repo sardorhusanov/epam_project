@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     )
     DEBUG: bool = False
     DATABASE_URL: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/project"
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/epam_project"
     )
     REDIS_URL: str = "redis://localhost:6379/0"
     JWT_SECRET_KEY: str = Field(min_length=32)

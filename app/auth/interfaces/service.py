@@ -19,11 +19,7 @@ class IAuthService(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def reset_password(
-        self,
-        email: str,
-        new_password: str,
-    ) -> None:
+    async def reset_password(self, reset_token: str, new_password: str) -> None:
         raise NotImplementedError
 
     @abstractmethod

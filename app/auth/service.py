@@ -8,7 +8,6 @@ from app.shared.exceptions.types import (
     AuthenticationError,
     ConflictError,
     ValidationError,
-    NotFoundError,
 )
 from app.shared.security.jwt import TokenManager, TokenPayload
 from app.shared.security.password import PasswordManager
@@ -60,27 +59,17 @@ class AuthService(IAuthService):
             raise AuthenticationError("Refresh token subject no longer exists")
         return await self._issue_token_pair(payload.subject)
 
-    async def reset_password(
-        self,
-        email: str,
-        new_password: str,
-    ) -> None:
-        user = await self._users.get_by_email(normalize_email(email))
-
-        if user is None:
-            raise NotFoundError("User not found")
-
+    async def reset_password(self, reset_token: str, new_password: str) -> None:
+        payload = self._tokens.decode(reset_token, "password_reset")
+        key = self._reset_key(payload.jti)
+        stored_subject = await self._cache.get(key)
+        if stored_subject != str(payload.subject):
+            raise AuthenticationError("Password-reset token is invalid or already used")
+        user = await self._require_user(payload.subject)
         if self._passwords.verify(new_password, user.hashed_password):
-            raise ValidationError(
-                "New password must differ from the current password"
-            )
-
-        hashed_password = self._passwords.hash(new_password)
-
-        await self._users.update_password(
-            user.id,
-            hashed_password,
-        )
+            raise ValidationError("New password must differ from the current password")
+        await self._users.update_password(user.id, self._passwords.hash(new_password))
+        await self._cache.delete(key)
 
     async def change_password(
         self, access_token: str, current_password: str, new_password: str

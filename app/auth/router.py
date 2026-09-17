@@ -66,15 +66,9 @@ async def refresh(
 @inject
 async def password_reset(
     data: PasswordResetRequest,
-    service: Annotated[
-        IAuthService,
-        Depends(Provide[Container.auth_service]),
-    ],
+    service: Annotated[IAuthService, Depends(Provide[Container.auth_service])],
 ) -> MessageResponse:
-    await service.reset_password(
-        str(data.email),
-        data.new_password,
-    )
+    await service.reset_password(data.reset_token, data.new_password)
     return MessageResponse(message="Password reset successfully")
 
 

@@ -26,13 +26,8 @@ class RefreshRequest(BaseModel):
 
 
 class PasswordResetRequest(BaseModel):
-    email: EmailStr
+    reset_token: str = Field(min_length=1)
     new_password: str = Field(min_length=8, max_length=128)
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def normalize_reset_email(cls, value: object) -> object:
-        return normalize_email(value) if isinstance(value, str) else value
 
 
 class ChangePasswordRequest(BaseModel):

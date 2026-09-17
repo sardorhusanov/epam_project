@@ -1,0 +1,1 @@
+"""EPAM project application package."""

@@ -10,25 +10,20 @@ from app.shared.exceptions.types import (
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(ConflictError, conflict_handler)
-    app.add_exception_handler(AuthenticationError, authentication_handler)
-    app.add_exception_handler(NotFoundError, not_found_handler)
-    app.add_exception_handler(ValidationError, validation_handler)
+    app.add_exception_handler(ConflictError, _conflict_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(AuthenticationError, _authentication_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(NotFoundError, _not_found_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ValidationError, _validation_handler)  # type: ignore[arg-type]
 
 
-async def conflict_handler(
-    request: Request,
-    exc: ConflictError,
-) -> JSONResponse:
+async def _conflict_handler(request: Request, exc: ConflictError) -> JSONResponse:
     return JSONResponse(
-        status_code=status.HTTP_409_CONFLICT,
-        content={"detail": str(exc)},
+        status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)}
     )
 
 
-async def authentication_handler(
-    request: Request,
-    exc: AuthenticationError,
+async def _authentication_handler(
+    request: Request, exc: AuthenticationError
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -37,20 +32,13 @@ async def authentication_handler(
     )
 
 
-async def not_found_handler(
-    request: Request,
-    exc: NotFoundError,
-) -> JSONResponse:
+async def _not_found_handler(request: Request, exc: NotFoundError) -> JSONResponse:
     return JSONResponse(
-        status_code=status.HTTP_404_NOT_FOUND,
-        content={"detail": str(exc)},
+        status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)}
     )
 
 
-async def validation_handler(
-    request: Request,
-    exc: ValidationError,
-) -> JSONResponse:
+async def _validation_handler(request: Request, exc: ValidationError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={"detail": str(exc)},
